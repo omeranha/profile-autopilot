@@ -1,6 +1,6 @@
 # Profile Autopilot
 
-Opens each folder in the VS Code profile that fits it, with no rules to write.
+Opens each folder in the VS Code profile that fits it, inferred from the extensions installed in each profile.
 
 When you open a folder in the `Default` profile, Profile Autopilot looks at the extensions installed in each of your profiles and at the files in the folder. It then switches to the profile that matches, which reloads the window once. VS Code remembers the profile for that folder, so the switch happens only the first time.
 
