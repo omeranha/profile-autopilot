@@ -15,8 +15,13 @@ When you open a folder in the `Default` profile, Profile Autopilot looks at the 
 
 ## Install
 
+Get the latest version in [Releases](https://github.com/omeranha/profile-autopilot/releases) or build:
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\build-vsix.ps1
+vsce package
+```
+
+Install:
+```powershell
 code --install-extension .\profile-autopilot-1.0.0.vsix
 ```
 

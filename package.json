@@ -9,6 +9,7 @@
   "engines": { "vscode": "^1.90.0" },
   "main": "./extension.js",
   "activationEvents": ["onStartupFinished"],
+  "repository": "https://github.com/omeranha/profile-autopilot",
   "contributes": {
     "commands": [
       { "command": "profileAutopilot.detectProfile", "title": "Profile Autopilot: Detect profile for this folder" },

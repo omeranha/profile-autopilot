@@ -1,0 +1,25 @@
+# VS Code & Git folders
+.vscode/**
+.vscode-test/**
+.github/**
+.gitignore
+
+# TypeScript source & configs (keep compiled out/ or dist/)
+src/**
+tsconfig.json
+**/*.ts
+!**/*.d.ts
+**/*.map
+
+# Bundlers, linters, & build tools
+webpack.config.js
+esbuild.js
+.eslintrc.json
+eslint.config.*
+.prettierrc*
+
+# Tests & miscellaneous
+test/**
+**/*.test.js
+vsc-extension-quickstart.md
+*.vsix
