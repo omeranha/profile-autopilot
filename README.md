@@ -15,15 +15,7 @@ When you open a folder in the `Default` profile, Profile Autopilot looks at the 
 
 ## Install
 
-Get the latest version in [Releases](https://github.com/omeranha/profile-autopilot/releases) or build:
-```powershell
-vsce package
-```
-
-Install:
-```powershell
-code --install-extension .\profile-autopilot-1.0.0.vsix
-```
+Get the latest version in [Visual Studio Extension Marketplace](https://marketplace.visualstudio.com/items?itemName=omeranha.profile-autopilot)
 
 Then use **Apply Extension to all Profiles** in the Extensions view, so every profile, including future ones, has the extension. Profile Autopilot only acts from the `Default` profile, but it must be installed in the profiles it reads from.
 
