@@ -17,6 +17,8 @@ const MIN_LEARNED_SIMILARITY = 0.4;
 const OWN_EXTENSION_ID = 'local.profile-autopilot';
 const LANGUAGE_SEARCH_EXCLUDE = '**/{node_modules,.git,.venv,venv,__pycache__}/**';
 const TIERS = ['folder', 'marker', 'learned', 'language'];
+const ROOT_EVIDENCE_TIERS = ['marker', 'learned'];
+const INFERENCE_VERSION = 4;
 
 function readManifest(extensionsDir, entry) {
   try {
@@ -105,7 +107,7 @@ function hasSignals(candidate) {
 
 function buildSignature(candidates, markers) {
   const data = candidates.map(candidate => [candidate.profile.id, ...TIERS.map(tier => [...candidate.signals[tier]].sort())]).sort((a, b) => a[0].localeCompare(b[0]));
-  return crypto.createHash('sha1').update(JSON.stringify([data, [...markers.entries()].sort()])).digest('hex');
+  return crypto.createHash('sha1').update(JSON.stringify([INFERENCE_VERSION, data, [...markers.entries()].sort()])).digest('hex');
 }
 
 function countOwners(candidates, tier) {
@@ -137,14 +139,60 @@ function orderByExtensionCount(pool) {
   return [...pool].sort((a, b) => a.extensionIds.size - b.extensionIds.size);
 }
 
+function isSettingsOnlyMatch(scored, candidate) {
+  const winner = scored.find(item => item.candidate === candidate);
+  return !winner.hits.some(key => candidate.extensionIds.has(key));
+}
+
+function discriminatingKeys(candidates, pool, tier, owners) {
+  const discriminating = key => candidates.length === 1 || owners.get(key) < candidates.length;
+  return [...new Set(pool.flatMap(candidate => [...candidate.signals[tier]]))].filter(discriminating);
+}
+
+async function findRootEvidence(candidates, find, log) {
+  const supported = new Set();
+  for (const tier of ROOT_EVIDENCE_TIERS) {
+    const owners = countOwners(candidates, tier);
+    const keys = discriminatingKeys(candidates, candidates, tier, owners);
+    if (keys.length === 0) {
+      continue;
+    }
+    const matched = await find(tier, keys);
+    for (const item of candidates.map(candidate => scoreCandidate(candidate, tier, owners, matched)).filter(entry => entry.score > 0)) {
+      log(`Inference (${tier}): profile "${item.candidate.profile.name}" scored ${item.score.toFixed(2)} (${item.hits.slice(0, 6).join(', ')})`);
+      supported.add(item.candidate);
+    }
+  }
+  return supported;
+}
+
+function isSubsetOf(candidate, other) {
+  return [...candidate.extensionIds].every(id => other.extensionIds.has(id));
+}
+
+// Tools such as the ESP-IDF extension write their settings into any folder they open, so a settings key alone does not prove what the folder is.
+// A profile whose extensions are all in the settings candidate's profile is not a rival, since that profile already has everything it offers.
+async function resolveSettingsOnlyMatch(settingsCandidate, candidates, find, log, marker) {
+  const supported = await findRootEvidence(candidates, find, log);
+  const rivals = candidates.filter(candidate => candidate !== settingsCandidate && supported.has(candidate) && !isSubsetOf(candidate, settingsCandidate));
+  if (rivals.length > 0) {
+    const ordered = orderByExtensionCount([settingsCandidate, ...rivals]);
+    log(`Settings keys point to "${settingsCandidate.profile.name}" but ${rivals.map(candidate => `"${candidate.profile.name}"`).join(', ')} also has root-level evidence; the user will be asked`);
+    return { ambiguous: ordered.map(candidate => candidate.profile.name), marker };
+  }
+  if (!supported.has(settingsCandidate)) {
+    log(`Settings keys were the only evidence for "${settingsCandidate.profile.name}"; no root-level marker or learned folder confirmed them`);
+  }
+  return { profileName: settingsCandidate.profile.name, marker, confident: supported.has(settingsCandidate) };
+}
+
 async function chooseCandidate(candidates, find, log) {
   const firstHit = new Map();
   let pool = candidates;
   let foundEvidence = false;
   for (const tier of TIERS) {
     const owners = countOwners(candidates, tier);
-    const discriminating = key => candidates.length === 1 || owners.get(key) < candidates.length;
-    const keys = [...new Set(pool.flatMap(candidate => [...candidate.signals[tier]]))].filter(discriminating);
+    const keys = discriminatingKeys(candidates, pool, tier, owners);
     if (keys.length === 0) {
       continue;
     }
@@ -163,6 +211,9 @@ async function chooseCandidate(candidates, find, log) {
     }
     pool = scored.filter(item => best - item.score < SCORE_TOLERANCE).map(item => item.candidate);
     if (pool.length === 1) {
+      if (tier === 'folder' && isSettingsOnlyMatch(scored, pool[0])) {
+        return resolveSettingsOnlyMatch(pool[0], candidates, find, log, firstHit.get(pool[0]));
+      }
       return { profileName: pool[0].profile.name, marker: firstHit.get(pool[0]), confident: tier !== 'language' };
     }
   }
