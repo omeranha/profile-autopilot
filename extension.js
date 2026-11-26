@@ -3,13 +3,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { DEFAULT_PROFILE_ID, readProfiles, activeProfileId, describeProfile, readDismissedFolders, dismissFolder } = require('./profiles');
+const { DEFAULT_PROFILE_ID, readProfiles, activeProfileId, describeProfile, readDismissedFolders, dismissFolder, readWorkspaceProfileId, readFailedSwitches, recordFailedSwitch, clearFailedSwitch } = require('./profiles');
 const { inferProfile } = require('./inference');
 const { learnChoice } = require('./learning');
 
 const SWITCH_COMMAND_PREFIX = 'workbench.profiles.actions.profileEntry.';
 const PENDING_MAX_AGE_MS = 60000;
-const HOT_SWITCH_WAIT_MS = 500;
+const HOST_RESTART_WAIT_MS = 5000;
 const SWITCH_NOW = 'Switch now';
 const DISMISS_FOLDER = 'Do not ask for this folder';
 const SWITCH_ANYWAY = 'Switch anyway';
@@ -37,8 +37,14 @@ function reportPendingSwitch(context) {
   if (elapsedMs > PENDING_MAX_AGE_MS) {
     return true;
   }
-  const reached = activeProfileId(context) === pending.targetId;
-  log(`Switch to "${pending.targetName}" ${reached ? 'completed' : 'NOT applied'} in ${(elapsedMs / 1000).toFixed(1)}s (window reload: ${pending.reloaded ? 'yes' : 'no'})`);
+  const reached = activeProfileId(context, currentWorkspaceKey()) === pending.targetId;
+  log(`Switch to "${pending.targetName}" ${reached ? 'completed' : 'NOT applied'} in ${(elapsedMs / 1000).toFixed(1)}s (window reload: ${pending.reloaded ? 'yes' : 'no'}; active profile ${describeProfile(context, activeProfileId(context, currentWorkspaceKey()))}; association ${readWorkspaceProfileId(context, currentWorkspaceKey())})`);
+  const folderKey = vscode.workspace.workspaceFolders?.[0]?.uri.toString();
+  if (folderKey && reached) {
+    clearFailedSwitch(context, folderKey, pending.targetId);
+  } else if (folderKey) {
+    recordFailedSwitch(context, folderKey, pending.targetId);
+  }
   if (!reached) {
     vscode.window.showWarningMessage(`Could not apply the profile "${pending.targetName}". Automatic profile selection was skipped for this window.`);
   }
@@ -73,6 +79,10 @@ async function confirmReload(target) {
   return true;
 }
 
+function currentWorkspaceKey() {
+  return (vscode.workspace.workspaceFile ?? vscode.workspace.workspaceFolders?.[0]?.uri)?.toString();
+}
+
 async function switchTo(context, target) {
   if (!(await confirmReload(target))) {
     return;
@@ -81,16 +91,23 @@ async function switchTo(context, target) {
   const pending = { targetId: target.id, targetName: target.name, startedAt: Date.now(), reloaded: false };
   fs.writeFileSync(pendingFile, JSON.stringify(pending));
   const commandId = SWITCH_COMMAND_PREFIX + target.id;
-  log(`Running ${commandId}`);
+  const workspaceKey = currentWorkspaceKey();
+  log(`Running ${commandId} (association before: ${readWorkspaceProfileId(context, workspaceKey)})`);
   try {
     await vscode.commands.executeCommand(commandId);
   } catch (error) {
+    if (error?.name === 'Canceled' || error?.message === 'Canceled') {
+      log('VS Code stopped the extension host while switching; the new host will confirm the result');
+      return;
+    }
     fs.rmSync(pendingFile, { force: true });
     log(`Failed to switch profile: ${error}`);
     vscode.window.showErrorMessage(`Failed to switch to the profile "${target.name}": ${error.message || error}`);
     return;
   }
-  await new Promise(resolve => setTimeout(resolve, HOT_SWITCH_WAIT_MS));
+  log(`Switch command returned in ${((Date.now() - pending.startedAt) / 1000).toFixed(2)}s (association now: ${readWorkspaceProfileId(context, workspaceKey)})`);
+  await new Promise(resolve => setTimeout(resolve, HOST_RESTART_WAIT_MS));
+  log(`The extension host survived ${HOST_RESTART_WAIT_MS}ms after the switch; reloading the window`);
   fs.writeFileSync(pendingFile, JSON.stringify({ ...pending, reloaded: true }));
   await vscode.commands.executeCommand('workbench.action.reloadWindow');
 }
@@ -132,11 +149,16 @@ async function applyInference(context, manual) {
     return;
   }
   const mode = vscode.workspace.getConfiguration('profileAutopilot').get('mode');
-  const currentId = activeProfileId(context);
+  const currentId = activeProfileId(context, currentWorkspaceKey());
   if (!manual && (mode === 'off' || currentId !== DEFAULT_PROFILE_ID)) {
+    if (mode !== 'off') {
+      log(`This window already uses the profile ${describeProfile(context, currentId)}; nothing to do`);
+    }
     return;
   }
   const profiles = readProfiles(context);
+  const folderKey = folders[0].uri.toString();
+  const failedIds = manual ? [] : readFailedSwitches(context)[folderKey] || [];
   const match = await inferProfile(context, profiles, folders, log, !manual);
   if (!match) {
     log('No profile matched this folder');
@@ -146,15 +168,14 @@ async function applyInference(context, manual) {
     return;
   }
   const names = match.ambiguous || [match.profileName];
-  const targets = names.map(name => profiles.find(profile => profile.name === name)).filter(profile => profile && profile.id !== currentId);
+  const targets = names.map(name => profiles.find(profile => profile.name === name)).filter(profile => profile && profile.id !== currentId && !failedIds.includes(profile.id));
   if (targets.length === 0) {
-    log(`The inferred profile "${names.join(', ')}" is the current one or no longer exists`);
+    log(`The inferred profile "${names.join(', ')}" is the current one, failed to apply before, or no longer exists`);
     if (manual && names.includes(findProfileName(profiles, currentId))) {
       vscode.window.showInformationMessage(`This window already uses the profile "${names[0]}".`);
     }
     return;
   }
-  const folderKey = folders[0].uri.toString();
   if (!manual && readDismissedFolders(context).includes(folderKey)) {
     log('Folder marked as do-not-ask; skipping');
     return;
@@ -172,7 +193,7 @@ async function applyInference(context, manual) {
 }
 async function listProfiles(context) {
   output.show(true);
-  log(`Active profile: ${describeProfile(context, activeProfileId(context))}`);
+  log(`Active profile: ${describeProfile(context, activeProfileId(context, currentWorkspaceKey()))}`);
   readProfiles(context).forEach(profile => output.appendLine(`  ${profile.name}\t${profile.id}`));
 }
 
@@ -192,7 +213,7 @@ async function activate(context) {
   context.subscriptions.push(vscode.commands.registerCommand('profileAutopilot.listProfiles', () => listProfiles(context)));
   context.subscriptions.push(vscode.commands.registerCommand('profileAutopilot.switchProfile', () => pickAndSwitch(context)));
   context.subscriptions.push(vscode.commands.registerCommand('profileAutopilot.detectProfile', () => applyInference(context, true)));
-  log(`Extension activated (active profile ${describeProfile(context, activeProfileId(context))})`);
+  log(`Extension activated (active profile ${describeProfile(context, activeProfileId(context, currentWorkspaceKey()))})`);
   const lastSwitchSucceeded = reportPendingSwitch(context);
   if (lastSwitchSucceeded) {
     await applyInference(context, false);

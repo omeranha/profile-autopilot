@@ -3,6 +3,7 @@ const path = require('path');
 
 const DEFAULT_PROFILE_ID = '__default__profile__';
 const DISMISSED_FILE_NAME = 'profile-autopilot-dismissed.json';
+const FAILED_FILE_NAME = 'profile-autopilot-failed.json';
 
 function findUserDir(startPath) {
   let current = startPath;
@@ -37,10 +38,15 @@ function readProfiles(context) {
   return [{ name: 'Default', id: DEFAULT_PROFILE_ID }, ...custom.map(profile => ({ name: profile.name, id: path.posix.basename(profile.location) }))];
 }
 
-function activeProfileId(context) {
+// Extensions applied to all profiles share one globalStorage path, which always reads as Default, so the folder association VS Code keeps is the fallback.
+function activeProfileId(context, workspaceKey) {
   const parts = context.globalStorageUri.fsPath.split(path.sep);
   const userIndex = parts.lastIndexOf('User');
-  return parts[userIndex + 1] === 'profiles' ? parts[userIndex + 2] : DEFAULT_PROFILE_ID;
+  if (parts[userIndex + 1] === 'profiles') {
+    return parts[userIndex + 2];
+  }
+  const associatedId = workspaceKey ? readWorkspaceProfileId(context, workspaceKey) : undefined;
+  return associatedId && readProfiles(context).some(profile => profile.id === associatedId) ? associatedId : DEFAULT_PROFILE_ID;
 }
 
 function describeProfile(context, id) {
@@ -63,4 +69,33 @@ function profileExtensionsPath(context, profileId) {
   return path.join(findUserDir(context.globalStorageUri.fsPath), 'profiles', profileId, 'extensions.json');
 }
 
-module.exports = { DEFAULT_PROFILE_ID, readProfiles, activeProfileId, describeProfile, readDismissedFolders, dismissFolder, profileExtensionsPath, readSharedJson, writeSharedJson };
+function readWorkspaceProfileId(context, workspaceKey) {
+  return readSharedJson(context, 'storage.json', {}).profileAssociations?.workspaces?.[workspaceKey];
+}
+
+function readFailedSwitches(context) {
+  return readSharedJson(context, FAILED_FILE_NAME, {});
+}
+
+function recordFailedSwitch(context, folderKey, targetId) {
+  const failed = readFailedSwitches(context);
+  const ids = failed[folderKey] || [];
+  if (!ids.includes(targetId)) {
+    writeSharedJson(context, FAILED_FILE_NAME, { ...failed, [folderKey]: [...ids, targetId] });
+  }
+}
+
+function clearFailedSwitch(context, folderKey, targetId) {
+  const failed = readFailedSwitches(context);
+  if (!failed[folderKey]?.includes(targetId)) {
+    return;
+  }
+  const { [folderKey]: ids, ...others } = failed;
+  const remaining = ids.filter(id => id !== targetId);
+  writeSharedJson(context, FAILED_FILE_NAME, remaining.length > 0 ? { ...others, [folderKey]: remaining } : others);
+}
+
+module.exports = {
+  DEFAULT_PROFILE_ID, readProfiles, activeProfileId, describeProfile, readDismissedFolders, dismissFolder, profileExtensionsPath, readSharedJson, writeSharedJson,
+  readWorkspaceProfileId, readFailedSwitches, recordFailedSwitch, clearFailedSwitch
+};
