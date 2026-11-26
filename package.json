@@ -3,7 +3,7 @@
   "displayName": "Profile Autopilot",
   "icon": "profile_autopilot.png",
   "description": "Opens each folder in the VS Code profile that fits it, inferred from the extensions installed in each profile",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "omeranha",
   "engines": { "vscode": "^1.90.0" },
   "main": "./extension.js",
