@@ -4,6 +4,7 @@ const path = require('path');
 const DEFAULT_PROFILE_ID = '__default__profile__';
 const DISMISSED_FILE_NAME = 'profile-autopilot-dismissed.json';
 const FAILED_FILE_NAME = 'profile-autopilot-failed.json';
+const SEEN_FILE_NAME = 'profile-autopilot-seen.json';
 
 function findUserDir(startPath) {
   let current = startPath;
@@ -69,6 +70,17 @@ function profileExtensionsPath(context, profileId) {
   return path.join(findUserDir(context.globalStorageUri.fsPath), 'profiles', profileId, 'extensions.json');
 }
 
+function readSeenFolders(context) {
+  return readSharedJson(context, SEEN_FILE_NAME, []);
+}
+
+function markFolderSeen(context, folderKey) {
+  const seen = readSeenFolders(context);
+  if (!seen.includes(folderKey)) {
+    writeSharedJson(context, SEEN_FILE_NAME, [...seen, folderKey]);
+  }
+}
+
 function readWorkspaceProfileId(context, workspaceKey) {
   return readSharedJson(context, 'storage.json', {}).profileAssociations?.workspaces?.[workspaceKey];
 }
@@ -97,5 +109,5 @@ function clearFailedSwitch(context, folderKey, targetId) {
 
 module.exports = {
   DEFAULT_PROFILE_ID, readProfiles, activeProfileId, describeProfile, readDismissedFolders, dismissFolder, profileExtensionsPath, readSharedJson, writeSharedJson,
-  readWorkspaceProfileId, readFailedSwitches, recordFailedSwitch, clearFailedSwitch
+  readWorkspaceProfileId, readFailedSwitches, recordFailedSwitch, clearFailedSwitch, readSeenFolders, markFolderSeen
 };

@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { DEFAULT_PROFILE_ID, readProfiles, activeProfileId, describeProfile, readDismissedFolders, dismissFolder, readWorkspaceProfileId, readFailedSwitches, recordFailedSwitch, clearFailedSwitch } = require('./profiles');
+const { DEFAULT_PROFILE_ID, readProfiles, activeProfileId, describeProfile, readDismissedFolders, dismissFolder, readWorkspaceProfileId, readFailedSwitches, recordFailedSwitch, clearFailedSwitch, readSeenFolders, markFolderSeen } = require('./profiles');
 const { inferProfile } = require('./inference');
 const { learnChoice } = require('./learning');
 
@@ -148,16 +148,23 @@ async function applyInference(context, manual) {
     }
     return;
   }
-  const mode = vscode.workspace.getConfiguration('profileAutopilot').get('mode');
+  const configuration = vscode.workspace.getConfiguration('profileAutopilot');
+  const mode = configuration.get('mode');
   const currentId = activeProfileId(context, currentWorkspaceKey());
-  if (!manual && (mode === 'off' || currentId !== DEFAULT_PROFILE_ID)) {
-    if (mode !== 'off') {
-      log(`This window already uses the profile ${describeProfile(context, currentId)}; nothing to do`);
+  const inDefault = currentId === DEFAULT_PROFILE_ID;
+  const folderKey = folders[0].uri.toString();
+  if (!manual) {
+    if (mode === 'off') {
+      return;
     }
-    return;
+    const firstSighting = !readSeenFolders(context).includes(folderKey);
+    if (!inDefault && !(configuration.get('actFrom') === 'any' && firstSighting)) {
+      log(`This window already uses the profile ${describeProfile(context, currentId)}; nothing to do`);
+      return;
+    }
+    markFolderSeen(context, folderKey);
   }
   const profiles = readProfiles(context);
-  const folderKey = folders[0].uri.toString();
   const failedIds = manual ? [] : readFailedSwitches(context)[folderKey] || [];
   const match = await inferProfile(context, profiles, folders, log, !manual);
   if (!match) {
@@ -168,6 +175,10 @@ async function applyInference(context, manual) {
     return;
   }
   const names = match.ambiguous || [match.profileName];
+  if (!manual && !inDefault && names.includes(findProfileName(profiles, currentId))) {
+    log(`The profile ${describeProfile(context, currentId)} used by this window fits the folder; nothing to do`);
+    return;
+  }
   const targets = names.map(name => profiles.find(profile => profile.name === name)).filter(profile => profile && profile.id !== currentId && !failedIds.includes(profile.id));
   if (targets.length === 0) {
     log(`The inferred profile "${names.join(', ')}" is the current one, failed to apply before, or no longer exists`);
@@ -185,7 +196,7 @@ async function applyInference(context, manual) {
     return;
   }
   log(`Inferred profile "${targets[0].name}" (marker "${match.marker}", ${match.confident ? 'confident' : 'tentative'})`);
-  if (manual || (mode === 'auto' && match.confident)) {
+  if (manual || (mode === 'auto' && match.confident && inDefault)) {
     await switchTo(context, targets[0]);
     return;
   }
